@@ -1,30 +1,56 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 )
 
 func main() {
-	helloWorldSvr := getHellowWorldServer()
+	// some context to let the servers know if we are canceling
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go getHellowWorldServer(ctx)
 	helloNameSvr := getHelloNameServer()
 	echoSvr := getEchoServer()
 
-	helloWorldSvr.ListenAndServe()
-	helloNameSvr.ListenAndServe()
-	echoSvr.ListenAndServe()
+	go helloNameSvr.ListenAndServe()
+	go echoSvr.ListenAndServe()
 	fmt.Println("all servers are started")
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	<-signals
+	cancel()
 }
 
-func getHellowWorldServer() *http.Server {
+func getHellowWorldServer(ctx context.Context) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`Hello, world!`))
 	})
 
-	return &http.Server{Addr: ":7000", Handler: mux}
+	server := &http.Server{Addr: ":7000", Handler: mux}
+
+	// shutdown using a context
+	go func() {
+		<-ctx.Done() // this is called when the corresponding cancel function is called
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutCtx); err != nil {
+			fmt.Printf("error shutting down hello world: %s\n", err)
+		}
+	}()
+	fmt.Printf("Hello world is starting")
+	if err := server.ListenAndServe(); err != http.ErrServerClosed {
+		fmt.Printf("error starting hello world server: %s\n", err)
+	}
+	fmt.Println("Hello server closing")
 }
 
 func getHelloNameServer() *http.Server {
